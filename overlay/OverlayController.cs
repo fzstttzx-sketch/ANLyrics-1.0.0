@@ -1050,30 +1050,49 @@ namespace ANLyrics
 
         private void UpdateCurrentLine()
         {
-            if (_lyrics == null || _lyrics.Lines.Count == 0)
+            if (_now == null || string.IsNullOrEmpty(_now.SongId) || _lyrics == null || _lyrics.SongId != _now.SongId)
             {
                 _controller.SetLyrics(null, false);
                 return;
             }
-            if (_now == null || string.IsNullOrEmpty(_now.SongId) || _lyrics.SongId != _now.SongId)
+
+            if (_lyrics.Kind == "instrumental")
             {
-                _controller.SetLyrics(null, false);
+                if (_currentIndex == -4) return;
+                _currentIndex = -4;
+                _controller.SetLyrics(PlaceholderLine("-纯音乐 请欣赏-"), true);
+                return;
+            }
+
+            if (_lyrics.Kind == "none" || _lyrics.Lines.Count == 0)
+            {
+                if (_currentIndex == -3) return;
+                _currentIndex = -3;
+                _controller.SetLyrics(PlaceholderLine("-没有人上传歌词哦-"), true);
                 return;
             }
 
             double elapsed = (Stopwatch.GetTimestamp() - _receivedTicks) / (double)Stopwatch.Frequency;
             double t = _timeBase + (_playing ? elapsed : 0) + _settings.OffsetMs / 1000.0;
             int idx = FindLine(t);
-            if (idx == _currentIndex) return;
-            _currentIndex = idx;
             if (idx < 0)
             {
-                _controller.SetLyrics(null, false);
+                if (_currentIndex == -5) return;
+                _currentIndex = -5;
+                _controller.SetLyrics(PlaceholderLine("-前奏-"), true);
+                return;
             }
-            else
-            {
-                _controller.SetLyrics(_lyrics.Lines[idx], true);
-            }
+            if (idx == _currentIndex) return;
+            _currentIndex = idx;
+            _controller.SetLyrics(_lyrics.Lines[idx], true);
+        }
+
+        private LyricLine PlaceholderLine(string message)
+        {
+            string title = _lyrics != null && !string.IsNullOrWhiteSpace(_lyrics.Title)
+                ? _lyrics.Title
+                : "未知歌曲";
+            return new LyricLine(0, title, message);
         }
 
         private int FindLine(double t)

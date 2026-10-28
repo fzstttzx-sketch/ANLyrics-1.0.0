@@ -538,6 +538,7 @@ namespace ANLyrics
         public string Title = "";
         public string Artist = "";
         public string CoverUrl = "";
+        public string Kind = "normal";
         public List<LyricLine> Lines = new List<LyricLine>();
 
         public static LyricsDoc Load(string path)
@@ -549,6 +550,8 @@ namespace ANLyrics
             doc.Title = Json.Str(d, "title", "");
             doc.Artist = Json.Str(d, "artist", "");
             doc.CoverUrl = Json.Str(d, "coverUrl", "");
+            doc.Kind = (Json.Str(d, "kind", "normal") ?? "normal").ToLowerInvariant();
+            if (doc.Kind != "none" && doc.Kind != "instrumental") doc.Kind = "normal";
             List<object> lines = Json.Arr(d, "lines");
             if (lines != null)
             {

@@ -11,6 +11,44 @@
 
     function trim(v) { return typeof v === "string" ? v.trim() : ""; }
 
+    function flag(v) {
+        return v === true || v === 1 || v === "1" || v === "true";
+    }
+
+    function placeholderKind(text) {
+        var t = trim(text).replace(/[\s，,。.!！、·・\-—_]/g, "");
+        if (!t) return "";
+        if (t.indexOf("纯音乐") >= 0 || t.indexOf("请欣赏") >= 0) return "instrumental";
+        if (t.indexOf("暂无歌词") >= 0 || t.indexOf("没有人上传") >= 0 ||
+            t.indexOf("歌词未") >= 0 || t.indexOf("没有歌词") >= 0) return "none";
+        return "";
+    }
+
+    function classify(raw, lines) {
+        if (raw) {
+            if (flag(raw.nolyric)) return "instrumental";
+            if (flag(raw.uncollected)) return "none";
+        }
+        if (!lines || !lines.length) return "none";
+
+        var joined = "";
+        var onlyPlaceholder = true;
+        for (var i = 0; i < lines.length; i++) {
+            var o = trim(lines[i].o);
+            var tr = trim(lines[i].tr);
+            joined += " " + o + " " + tr;
+            if ((o && !placeholderKind(o)) || (tr && !placeholderKind(tr))) {
+                onlyPlaceholder = false;
+                break;
+            }
+        }
+        if (onlyPlaceholder) {
+            if (joined.indexOf("纯音乐") >= 0 || joined.indexOf("请欣赏") >= 0) return "instrumental";
+            return "none";
+        }
+        return "normal";
+    }
+
     function parseTimestamp(tag) {
         var m = tag.match(/^\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]$/);
         if (!m) return null;
@@ -119,6 +157,7 @@
         }
         return {
             lines: lines,
+            kind: classify(lyr, lines),
             cover: song && song.album ? (song.album.picUrl || song.album.blurPicUrl || "") : "",
             title: song ? song.name : "",
             artist: song && song.artists ? song.artists.map(function (a) { return a.name; }).join(" / ") : ""
@@ -138,6 +177,7 @@
             title: titleFallback || "",
             artist: artistFallback || "",
             coverUrl: coverFallback || "",
+            kind: "normal",
             lines: []
         };
 
@@ -146,20 +186,23 @@
             try {
                 var raw = await lp.getLyricData(songId);
                 doc.lines = fromLibLyric(raw);
+                doc.kind = classify(raw, doc.lines);
             } catch (e) {
                 console.warn("[ANLyrics] liblyric.getLyricData failed", e);
             }
         }
 
-        if (!doc.lines.length) {
+        if (!doc.lines.length && doc.kind === "normal") {
             try {
                 var pub = await fetchPublic(songId);
                 doc.lines = pub.lines;
+                doc.kind = pub.kind || classify(null, pub.lines);
                 if (!doc.coverUrl) doc.coverUrl = pub.cover;
                 if (!doc.title) doc.title = pub.title;
                 if (!doc.artist) doc.artist = pub.artist;
             } catch (e) {
                 console.warn("[ANLyrics] public lyric fallback failed", e);
+                doc.kind = classify(null, doc.lines);
             }
         }
 
