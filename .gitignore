@@ -1,0 +1,6 @@
+_backup/
+_testdata/
+dist/
+__pycache__/
+*.pyc
+*.log

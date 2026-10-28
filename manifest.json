@@ -1,0 +1,21 @@
+{
+  "manifest_version": 1,
+  "name": "ANLyrics",
+  "slug": "ANLyrics",
+  "description": "独立的桌面歌词层：封面取色渐变、平滑淡入淡出、桌面/任务栏双模式，无原生 DLL。",
+  "version": "1.0.0",
+  "author": "ANLyrics",
+  "type": "extension",
+  "betterncm_version": ">=1.3.0",
+  "loadAfter": ["liblyric"],
+  "injects": {
+    "Main": [
+      { "file": "src/model.js" },
+      { "file": "src/io.js" },
+      { "file": "src/lyrics.js" },
+      { "file": "src/player.js" },
+      { "file": "src/app.js" },
+      { "file": "config.js" }
+    ]
+  }
+}
