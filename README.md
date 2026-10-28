@@ -1,3 +1,5 @@
+纯deepseek人工调教产物
+
 # ANLyrics
 
 BetterNCM 独立桌面歌词插件。歌词绘制在 BetterNCM 之外的 WPF 分层窗口中，不附带任何 DLL / EXE，启动时由 PowerShell 的 `Add-Type` 在内存中编译 C#。
@@ -28,7 +30,6 @@ BetterNCM 独立桌面歌词插件。歌词绘制在 BetterNCM 之外的 WPF 分
 - 设置页的字体下拉读取 `fonts.json`，同时枚举 WPF 与 GDI 字体，包含当前用户目录（`%LOCALAPPDATA%\Microsoft\Windows\Fonts`）里的字体。
 - 列表默认 **中文字体在前**，英文和其他字体在后；字体卡片顶部有搜索框，输入中文或英文即可过滤。
 - 如果新装的字体没有出现在列表里，打开插件设置，点击字体卡片底部的 **刷新系统字体**；仍不显示时，确认字体是“为当前用户安装”，再重启网易云。
-- 本机验证：列表约 374 个字体，包含 `萝莉体 第二版`、`阿里巴巴普惠体 3.0 45 Light`。
 
 ## 日志
 
