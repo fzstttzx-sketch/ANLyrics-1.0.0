@@ -590,7 +590,9 @@ namespace ANLyrics
         public Color Secondary;
         public double Luminance;
         public bool IsDark;
+        public bool IsVeryDark;
         public bool IsGray;
+        public bool HasAccent;
     }
 
     public static class ColorUtil
@@ -784,7 +786,8 @@ namespace ANLyrics
                     {
                         _palette = p;
                         _paletteSongId = songId;
-                        Log.Info("theme ready: " + songId + " dark=" + p.IsDark + " gray=" + p.IsGray
+                        Log.Info("theme ready: " + songId + " dark=" + p.IsDark + " veryDark=" + p.IsVeryDark
+                            + " gray=" + p.IsGray + " accent=" + p.HasAccent
                             + " primary=" + Settings.ToHex(p.Primary) + " secondary=" + Settings.ToHex(p.Secondary));
                         if (Changed != null) Changed();
                     }));
@@ -800,8 +803,8 @@ namespace ANLyrics
 
             if (useCover)
             {
-                t.DarkFallback = p.IsDark;
-                if (p.IsDark)
+                t.DarkFallback = p.IsDark || p.IsVeryDark;
+                if (p.IsVeryDark || (p.IsDark && !p.HasAccent))
                 {
                     t.OriginalFill = Gradient(
                         Color.FromRgb(255, 255, 255),
@@ -813,6 +816,27 @@ namespace ANLyrics
                         Color.FromRgb(190, 216, 250));
                     t.OriginalColor = Colors.White;
                     t.TranslationColor = Color.FromRgb(221, 237, 255);
+                }
+                else if (p.IsDark)
+                {
+                    // The cover is dark, but it still has a usable bright accent
+                    // (skin, sky, stage light, neon...). Lift that accent into a
+                    // readable pastel ramp instead of falling back to plain white.
+                    Color accent = ColorUtil.Readable(p.Secondary);
+                    Color baseColor = ColorUtil.Mix(accent, Colors.White, 0.40);
+                    t.OriginalFill = Gradient(
+                        ColorUtil.Lighten(baseColor, 0.45),
+                        baseColor,
+                        ColorUtil.Mix(baseColor, accent, 0.55),
+                        accent);
+                    Color translationBase = ColorUtil.Mix(accent, Colors.White, 0.80);
+                    t.TranslationFill = Gradient(
+                        ColorUtil.Lighten(translationBase, 0.18),
+                        translationBase,
+                        ColorUtil.Mix(translationBase, accent, 0.18),
+                        ColorUtil.Mix(translationBase, accent, 0.32));
+                    t.OriginalColor = baseColor;
+                    t.TranslationColor = translationBase;
                 }
                 else if (p.IsGray)
                 {
@@ -868,7 +892,7 @@ namespace ANLyrics
                 ? ColorUtil.Contrast(t.TranslationColor)
                 : _settings.OutlineTranslation;
 
-            if (useCover && p.IsDark)
+            if (useCover && (p.IsDark || p.IsVeryDark))
             {
                 oc = Color.FromArgb(235, 0, 0, 0);
                 tc = Color.FromArgb(235, 0, 0, 0);
@@ -1059,7 +1083,9 @@ namespace ANLyrics
                 gray.Secondary = Color.FromRgb(206, 218, 232);
                 gray.Luminance = avg;
                 gray.IsDark = avg < 0.22;
+                gray.IsVeryDark = avg < 0.12;
                 gray.IsGray = true;
+                gray.HasAccent = false;
                 return gray;
             }
 
@@ -1076,6 +1102,25 @@ namespace ANLyrics
                 (byte)(first.R / first.Count),
                 (byte)(first.G / first.Count),
                 (byte)(first.B / first.Count));
+
+            // A cover can be mostly near-black while still containing a strong
+            // readable accent (skin, sunset, neon, stage light). Pick that
+            // accent deliberately; otherwise the "primary" bucket is often the
+            // near-black background and every dark cover degrades to white.
+            Bucket highlight = null;
+            double highlightScore = -1;
+            foreach (Bucket b in ordered)
+            {
+                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
+                if (lum < 0.30) continue;
+                double sat = b.Sat / b.Count;
+                double score = b.Count * (0.22 + sat) * lum * lum;
+                if (score > highlightScore)
+                {
+                    highlightScore = score;
+                    highlight = b;
+                }
+            }
 
             Color secondary = primary;
             double ph, ps, pl;
@@ -1094,21 +1139,49 @@ namespace ANLyrics
                     break;
                 }
             }
+
+            Color accent = secondary;
+            if (highlight != null)
+            {
+                Color hc = Color.FromRgb(
+                    (byte)(highlight.R / highlight.Count),
+                    (byte)(highlight.G / highlight.Count),
+                    (byte)(highlight.B / highlight.Count));
+                if (secondary == primary || ColorUtil.Lum(hc) > ColorUtil.Lum(secondary) + 0.08)
+                {
+                    secondary = hc;
+                    accent = hc;
+                }
+            }
+
             if (secondary == primary)
             {
                 secondary = ColorUtil.FromHsl((ph + 0.08) % 1.0, Math.Min(1, ps + 0.08), Math.Min(0.82, pl + 0.08));
             }
 
             double primaryLum = ColorUtil.Lum(primary);
-            bool dark = avg < 0.20 || primaryLum < 0.155;
-            bool grayish = ps < 0.11;
+            double secondaryLum = ColorUtil.Lum(secondary);
+            double accentSat = 0;
+            double ah, asat, al;
+            ColorUtil.ToHsl(accent, out ah, out asat, out al);
+            accentSat = asat;
+
+            // Very dark / near-black covers keep the fixed white + black
+            // outline fallback. Merely dark covers with a bright accent get a
+            // lifted pastel gradient instead of losing all cover color.
+            bool veryDark = avg < 0.12;
+            bool hasAccent = secondaryLum >= 0.30 && accentSat >= 0.12;
+            bool dark = avg < 0.30 || primaryLum < 0.20;
+            bool grayish = ps < 0.10 && !hasAccent;
 
             Palette result = new Palette();
             result.Primary = primary;
             result.Secondary = secondary;
             result.Luminance = avg;
             result.IsDark = dark;
+            result.IsVeryDark = veryDark;
             result.IsGray = grayish;
+            result.HasAccent = hasAccent;
             return result;
         }
     }
