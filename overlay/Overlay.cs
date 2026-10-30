@@ -1027,6 +1027,50 @@ namespace ANLyrics
             }
         }
 
+        private static Color Representative(Dictionary<int, Bucket> buckets, double hue, double radius)
+        {
+            long region = 0;
+            foreach (Bucket b in buckets.Values)
+            {
+                Color c = Color.FromRgb(
+                    (byte)(b.R / b.Count),
+                    (byte)(b.G / b.Count),
+                    (byte)(b.B / b.Count));
+                double h, s, l;
+                ColorUtil.ToHsl(c, out h, out s, out l);
+                if (ColorUtil.HueDistance(h, hue) <= radius) region += b.Count;
+            }
+            if (region <= 0) return ColorUtil.FromHsl(hue, 0.42, 0.58);
+
+            Bucket best = null;
+            double bestScore = -1;
+            foreach (Bucket b in buckets.Values)
+            {
+                if (b.Count < Math.Max(4L, (long)(region * 0.06))) continue;
+                Color c = Color.FromRgb(
+                    (byte)(b.R / b.Count),
+                    (byte)(b.G / b.Count),
+                    (byte)(b.B / b.Count));
+                double h, s, l;
+                ColorUtil.ToHsl(c, out h, out s, out l);
+                if (ColorUtil.HueDistance(h, hue) > radius) continue;
+                // Prefer a real, saturated cloth/leaf colour over the muddy
+                // average of leaves, sky and haze. The count floor keeps a few
+                // stray pixels from becoming the whole lyric theme.
+                double score = b.Count * Math.Pow(s, 1.35);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = b;
+                }
+            }
+            if (best == null) return ColorUtil.FromHsl(hue, 0.42, 0.58);
+            return Color.FromRgb(
+                (byte)(best.R / best.Count),
+                (byte)(best.G / best.Count),
+                (byte)(best.B / best.Count));
+        }
+
         private static Palette FromStream(Stream stream)
         {
             BitmapImage img = new BitmapImage();
@@ -1052,6 +1096,7 @@ namespace ANLyrics
             src.CopyPixels(px, stride, 0);
 
             Dictionary<int, Bucket> buckets = new Dictionary<int, Bucket>();
+            double[] hueWeight = new double[72];
             double totalLum = 0;
             long total = 0;
             for (int y = 0; y < h; y++)
@@ -1070,6 +1115,17 @@ namespace ANLyrics
                     if (lum < 0.035 || lum > 0.97) continue;
                     double sat = max <= 0.001 ? 0 : (max - min) / max;
                     if (sat < 0.10) continue;
+
+                    double hh, hs, hl;
+                    ColorUtil.ToHsl(Color.FromRgb(r, g, b), out hh, out hs, out hl);
+                    int hb = (int)Math.Floor(hh * 72.0);
+                    if (hb < 0) hb = 0;
+                    if (hb >= 72) hb = 71;
+                    // Weight by area and saturation. Raw RGB buckets split a
+                    // large autumn canopy across many orange/yellow buckets,
+                    // while a uniform sky occupies one bucket; the hue
+                    // histogram prevents that from winning by accident.
+                    hueWeight[hb] += Math.Pow(0.30 + sat, 1.15);
 
                     int key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
                     Bucket bucket;
@@ -1100,122 +1156,75 @@ namespace ANLyrics
                 return gray;
             }
 
-            // Choose the most representative colour by area, not by brightness.
-            // Brightness-weighted selection used to promote tiny gold stars or
-            // warm skin highlights above a large blue/cyan background.
-            Bucket dominant = null;
-            foreach (Bucket b in buckets.Values)
+            // Smooth the 5-degree hue histogram so a large canopy split over
+            // several orange/yellow buckets still reads as one dominant hue.
+            double[] smooth = new double[72];
+            for (int i = 0; i < 72; i++)
             {
-                if (dominant == null || b.Count > dominant.Count) dominant = b;
+                smooth[i] = hueWeight[(i + 71) % 72] * 0.22
+                    + hueWeight[i]
+                    + hueWeight[(i + 1) % 72] * 0.22;
             }
 
-            Color primary = new Color();
-            primary = Color.FromRgb(
-                (byte)(dominant.R / dominant.Count),
-                (byte)(dominant.G / dominant.Count),
-                (byte)(dominant.B / dominant.Count));
+            int primaryBin = 0;
+            for (int i = 1; i < 72; i++)
+            {
+                if (smooth[i] > smooth[primaryBin]) primaryBin = i;
+            }
+            double primaryHue = (primaryBin + 0.5) / 72.0;
+            double primaryWeight = smooth[primaryBin];
 
+            int secondaryBin = -1;
+            double secondaryWeight = 0;
+            for (int i = 0; i < 72; i++)
+            {
+                double hue = (i + 0.5) / 72.0;
+                if (ColorUtil.HueDistance(hue, primaryHue) < 0.085) continue;
+                if (smooth[i] > secondaryWeight)
+                {
+                    secondaryWeight = smooth[i];
+                    secondaryBin = i;
+                }
+            }
+
+            // A second hue only participates when it is genuinely present and
+            // belongs to the same visual family. A small complementary patch
+            // (blue sky, teal dress) must not turn an autumn cover cyan.
+            double secondaryHue = secondaryBin >= 0 ? (secondaryBin + 0.5) / 72.0 : primaryHue;
+            double secondaryHueDistance = ColorUtil.HueDistance(secondaryHue, primaryHue);
+            bool sameFamily = secondaryHueDistance <= 0.20;
+            bool overwhelming = secondaryWeight >= primaryWeight * 0.85;
+            bool hasSecond = secondaryBin >= 0
+                && secondaryWeight >= primaryWeight * 0.58
+                && (sameFamily || overwhelming);
+
+            Color primary = Representative(buckets, primaryHue, 0.055);
             double ph, ps, pl;
             ColorUtil.ToHsl(primary, out ph, out ps, out pl);
 
-            long accentThreshold = Math.Max(6L, (long)(total * 0.007));
-            long secondaryThreshold = Math.Max(4L, (long)(total * 0.004));
+            Color secondary = hasSecond
+                ? Representative(buckets, secondaryHue, 0.045)
+                : ColorUtil.FromHsl(
+                    (primaryHue + 0.055) % 1.0,
+                    Math.Min(1.0, ps + 0.06),
+                    Math.Min(0.80, pl + 0.10));
 
-            Bucket secondaryBucket = null;
-            double secondaryScore = -1;
-            foreach (Bucket b in buckets.Values)
-            {
-                if (b == dominant || b.Count < secondaryThreshold) continue;
-                double sat = b.Sat / b.Count;
-                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
-                if (sat < 0.12) continue;
-
-                Color c = Color.FromRgb((byte)(b.R / b.Count), (byte)(b.G / b.Count), (byte)(b.B / b.Count));
-                double ch, cs, cl;
-                ColorUtil.ToHsl(c, out ch, out cs, out cl);
-                double dh = ColorUtil.HueDistance(ch, ph);
-                bool largeArea = b.Count >= total * 0.035;
-                if (dh > 0.18 && !largeArea) continue;
-
-                double score = Math.Sqrt(b.Count / (double)total) * (0.45 + sat) * (0.55 + 0.45 * lum);
-                if (score > secondaryScore)
-                {
-                    secondaryScore = score;
-                    secondaryBucket = b;
-                }
-            }
-
-            Color secondary;
-            if (secondaryBucket != null)
-            {
-                secondary = Color.FromRgb(
-                    (byte)(secondaryBucket.R / secondaryBucket.Count),
-                    (byte)(secondaryBucket.G / secondaryBucket.Count),
-                    (byte)(secondaryBucket.B / secondaryBucket.Count));
-            }
-            else
-            {
-                // No reliable second colour: stay in the same family instead of
-                // inventing a complementary hue that may look disconnected.
-                secondary = ColorUtil.FromHsl(
-                    (ph + 0.06) % 1.0,
-                    Math.Min(1.0, ps + 0.10),
-                    Math.Min(0.80, pl + 0.12));
-            }
-
-            // Bright accent must occupy a meaningful area. Isolated stars,
-            // lamps or skin pixels are deliberately rejected so a blue cover
-            // cannot turn its lyrics gold.
-            Bucket accentBucket = null;
-            double accentScore = -1;
-            foreach (Bucket b in buckets.Values)
-            {
-                if (b == dominant || b.Count < accentThreshold) continue;
-                double sat = b.Sat / b.Count;
-                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
-                if (sat < 0.18 || lum < 0.24) continue;
-
-                Color c = Color.FromRgb((byte)(b.R / b.Count), (byte)(b.G / b.Count), (byte)(b.B / b.Count));
-                double ch, cs, cl;
-                ColorUtil.ToHsl(c, out ch, out cs, out cl);
-                double dh = ColorUtil.HueDistance(ch, ph);
-                bool largeArea = b.Count >= total * 0.030;
-                if (dh > 0.20 && !largeArea) continue;
-
-                double score = Math.Sqrt(b.Count / (double)total) * sat * (0.35 + 0.65 * lum);
-                if (score > accentScore)
-                {
-                    accentScore = score;
-                    accentBucket = b;
-                }
-            }
-
-            Color accent = secondary;
-            if (accentBucket != null)
-            {
-                accent = Color.FromRgb(
-                    (byte)(accentBucket.R / accentBucket.Count),
-                    (byte)(accentBucket.G / accentBucket.Count),
-                    (byte)(accentBucket.B / accentBucket.Count));
-            }
+            double sh, ss, sl;
+            ColorUtil.ToHsl(secondary, out sh, out ss, out sl);
 
             double primaryLum = ColorUtil.Lum(primary);
             double secondaryLum = ColorUtil.Lum(secondary);
-            double ah, asat, al;
-            ColorUtil.ToHsl(accent, out ah, out asat, out al);
 
             // Broad "dark" classification keeps more non-black covers tinted;
             // only a genuinely near-black image loses the cover palette.
             bool veryDark = avg < 0.10;
-            bool hasAccent = accentBucket != null
-                && secondaryLum >= 0.24
-                && asat >= 0.12;
+            bool hasAccent = hasSecond && secondaryLum >= 0.24 && ss >= 0.12;
             bool dark = avg < 0.32 || primaryLum < 0.19;
             bool grayish = ps < 0.12 && !hasAccent;
 
             Palette result = new Palette();
             result.Primary = primary;
-            result.Secondary = accent;
+            result.Secondary = secondary;
             result.Luminance = avg;
             result.IsDark = dark;
             result.IsVeryDark = veryDark;
