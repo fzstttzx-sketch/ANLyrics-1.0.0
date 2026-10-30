@@ -702,6 +702,12 @@ namespace ANLyrics
             if (s < 0.28) s = 0.28;
             return FromHsl(h, s, l);
         }
+
+        public static double HueDistance(double a, double b)
+        {
+            double d = Math.Abs(a - b);
+            return d > 0.5 ? 1.0 - d : d;
+        }
     }
 
     public class Theme
@@ -804,8 +810,10 @@ namespace ANLyrics
             if (useCover)
             {
                 t.DarkFallback = p.IsDark || p.IsVeryDark;
-                if (p.IsVeryDark || (p.IsDark && !p.HasAccent))
+                if (p.IsVeryDark)
                 {
+                    // Genuinely black/near-black covers keep the guaranteed
+                    // white + black-outline fallback.
                     t.OriginalFill = Gradient(
                         Color.FromRgb(255, 255, 255),
                         Color.FromRgb(232, 243, 255),
@@ -816,27 +824,6 @@ namespace ANLyrics
                         Color.FromRgb(190, 216, 250));
                     t.OriginalColor = Colors.White;
                     t.TranslationColor = Color.FromRgb(221, 237, 255);
-                }
-                else if (p.IsDark)
-                {
-                    // The cover is dark, but it still has a usable bright accent
-                    // (skin, sky, stage light, neon...). Lift that accent into a
-                    // readable pastel ramp instead of falling back to plain white.
-                    Color accent = ColorUtil.Readable(p.Secondary);
-                    Color baseColor = ColorUtil.Mix(accent, Colors.White, 0.40);
-                    t.OriginalFill = Gradient(
-                        ColorUtil.Lighten(baseColor, 0.45),
-                        baseColor,
-                        ColorUtil.Mix(baseColor, accent, 0.55),
-                        accent);
-                    Color translationBase = ColorUtil.Mix(accent, Colors.White, 0.80);
-                    t.TranslationFill = Gradient(
-                        ColorUtil.Lighten(translationBase, 0.18),
-                        translationBase,
-                        ColorUtil.Mix(translationBase, accent, 0.18),
-                        ColorUtil.Mix(translationBase, accent, 0.32));
-                    t.OriginalColor = baseColor;
-                    t.TranslationColor = translationBase;
                 }
                 else if (p.IsGray)
                 {
@@ -850,6 +837,30 @@ namespace ANLyrics
                         Color.FromRgb(200, 212, 228));
                     t.OriginalColor = Color.FromRgb(246, 249, 255);
                     t.TranslationColor = Color.FromRgb(226, 234, 244);
+                }
+                else if (p.IsDark)
+                {
+                    // Dark but still chromatic: use the dominant cover hue as
+                    // the anchor, not whatever small bright object won the
+                    // accent score. This keeps a blue cover blue.
+                    Color anchor = ColorUtil.Readable(p.Primary);
+                    Color second = p.HasAccent
+                        ? ColorUtil.Readable(p.Secondary)
+                        : ColorUtil.Lighten(anchor, 0.16);
+                    Color baseColor = ColorUtil.Mix(anchor, Colors.White, 0.26);
+                    t.OriginalFill = Gradient(
+                        ColorUtil.Lighten(baseColor, 0.44),
+                        baseColor,
+                        ColorUtil.Mix(baseColor, second, 0.52),
+                        second);
+                    Color translationBase = ColorUtil.Mix(anchor, Colors.White, 0.80);
+                    t.TranslationFill = Gradient(
+                        ColorUtil.Lighten(translationBase, 0.16),
+                        translationBase,
+                        ColorUtil.Mix(translationBase, second, 0.16),
+                        ColorUtil.Mix(translationBase, second, 0.32));
+                    t.OriginalColor = baseColor;
+                    t.TranslationColor = translationBase;
                 }
                 else
                 {
@@ -1089,94 +1100,122 @@ namespace ANLyrics
                 return gray;
             }
 
-            List<Bucket> ordered = buckets.Values.OrderByDescending(delegate (Bucket b)
+            // Choose the most representative colour by area, not by brightness.
+            // Brightness-weighted selection used to promote tiny gold stars or
+            // warm skin highlights above a large blue/cyan background.
+            Bucket dominant = null;
+            foreach (Bucket b in buckets.Values)
             {
-                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
-                double sat = b.Sat / b.Count;
-                double center = 1.0 - Math.Min(1.0, Math.Abs(lum - 0.58) * 1.7);
-                return b.Count * (0.45 + sat) * (0.55 + 0.45 * center);
-            }).ToList();
-
-            Bucket first = ordered[0];
-            Color primary = Color.FromRgb(
-                (byte)(first.R / first.Count),
-                (byte)(first.G / first.Count),
-                (byte)(first.B / first.Count));
-
-            // A cover can be mostly near-black while still containing a strong
-            // readable accent (skin, sunset, neon, stage light). Pick that
-            // accent deliberately; otherwise the "primary" bucket is often the
-            // near-black background and every dark cover degrades to white.
-            Bucket highlight = null;
-            double highlightScore = -1;
-            foreach (Bucket b in ordered)
-            {
-                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
-                if (lum < 0.30) continue;
-                double sat = b.Sat / b.Count;
-                double score = b.Count * (0.22 + sat) * lum * lum;
-                if (score > highlightScore)
-                {
-                    highlightScore = score;
-                    highlight = b;
-                }
+                if (dominant == null || b.Count > dominant.Count) dominant = b;
             }
 
-            Color secondary = primary;
+            Color primary = new Color();
+            primary = Color.FromRgb(
+                (byte)(dominant.R / dominant.Count),
+                (byte)(dominant.G / dominant.Count),
+                (byte)(dominant.B / dominant.Count));
+
             double ph, ps, pl;
             ColorUtil.ToHsl(primary, out ph, out ps, out pl);
-            for (int i = 1; i < ordered.Count; i++)
+
+            long accentThreshold = Math.Max(6L, (long)(total * 0.007));
+            long secondaryThreshold = Math.Max(4L, (long)(total * 0.004));
+
+            Bucket secondaryBucket = null;
+            double secondaryScore = -1;
+            foreach (Bucket b in buckets.Values)
             {
-                Bucket b = ordered[i];
+                if (b == dominant || b.Count < secondaryThreshold) continue;
+                double sat = b.Sat / b.Count;
+                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
+                if (sat < 0.12) continue;
+
                 Color c = Color.FromRgb((byte)(b.R / b.Count), (byte)(b.G / b.Count), (byte)(b.B / b.Count));
                 double ch, cs, cl;
                 ColorUtil.ToHsl(c, out ch, out cs, out cl);
-                double dh = Math.Abs(ch - ph);
-                if (dh > 0.5) dh = 1 - dh;
-                if (dh > 0.065 || Math.Abs(cl - pl) > 0.22)
+                double dh = ColorUtil.HueDistance(ch, ph);
+                bool largeArea = b.Count >= total * 0.035;
+                if (dh > 0.18 && !largeArea) continue;
+
+                double score = Math.Sqrt(b.Count / (double)total) * (0.45 + sat) * (0.55 + 0.45 * lum);
+                if (score > secondaryScore)
                 {
-                    secondary = c;
-                    break;
+                    secondaryScore = score;
+                    secondaryBucket = b;
+                }
+            }
+
+            Color secondary;
+            if (secondaryBucket != null)
+            {
+                secondary = Color.FromRgb(
+                    (byte)(secondaryBucket.R / secondaryBucket.Count),
+                    (byte)(secondaryBucket.G / secondaryBucket.Count),
+                    (byte)(secondaryBucket.B / secondaryBucket.Count));
+            }
+            else
+            {
+                // No reliable second colour: stay in the same family instead of
+                // inventing a complementary hue that may look disconnected.
+                secondary = ColorUtil.FromHsl(
+                    (ph + 0.06) % 1.0,
+                    Math.Min(1.0, ps + 0.10),
+                    Math.Min(0.80, pl + 0.12));
+            }
+
+            // Bright accent must occupy a meaningful area. Isolated stars,
+            // lamps or skin pixels are deliberately rejected so a blue cover
+            // cannot turn its lyrics gold.
+            Bucket accentBucket = null;
+            double accentScore = -1;
+            foreach (Bucket b in buckets.Values)
+            {
+                if (b == dominant || b.Count < accentThreshold) continue;
+                double sat = b.Sat / b.Count;
+                double lum = (0.2126 * b.R + 0.7152 * b.G + 0.0722 * b.B) / (b.Count * 255.0);
+                if (sat < 0.18 || lum < 0.24) continue;
+
+                Color c = Color.FromRgb((byte)(b.R / b.Count), (byte)(b.G / b.Count), (byte)(b.B / b.Count));
+                double ch, cs, cl;
+                ColorUtil.ToHsl(c, out ch, out cs, out cl);
+                double dh = ColorUtil.HueDistance(ch, ph);
+                bool largeArea = b.Count >= total * 0.030;
+                if (dh > 0.20 && !largeArea) continue;
+
+                double score = Math.Sqrt(b.Count / (double)total) * sat * (0.35 + 0.65 * lum);
+                if (score > accentScore)
+                {
+                    accentScore = score;
+                    accentBucket = b;
                 }
             }
 
             Color accent = secondary;
-            if (highlight != null)
+            if (accentBucket != null)
             {
-                Color hc = Color.FromRgb(
-                    (byte)(highlight.R / highlight.Count),
-                    (byte)(highlight.G / highlight.Count),
-                    (byte)(highlight.B / highlight.Count));
-                if (secondary == primary || ColorUtil.Lum(hc) > ColorUtil.Lum(secondary) + 0.08)
-                {
-                    secondary = hc;
-                    accent = hc;
-                }
-            }
-
-            if (secondary == primary)
-            {
-                secondary = ColorUtil.FromHsl((ph + 0.08) % 1.0, Math.Min(1, ps + 0.08), Math.Min(0.82, pl + 0.08));
+                accent = Color.FromRgb(
+                    (byte)(accentBucket.R / accentBucket.Count),
+                    (byte)(accentBucket.G / accentBucket.Count),
+                    (byte)(accentBucket.B / accentBucket.Count));
             }
 
             double primaryLum = ColorUtil.Lum(primary);
             double secondaryLum = ColorUtil.Lum(secondary);
-            double accentSat = 0;
             double ah, asat, al;
             ColorUtil.ToHsl(accent, out ah, out asat, out al);
-            accentSat = asat;
 
-            // Very dark / near-black covers keep the fixed white + black
-            // outline fallback. Merely dark covers with a bright accent get a
-            // lifted pastel gradient instead of losing all cover color.
-            bool veryDark = avg < 0.12;
-            bool hasAccent = secondaryLum >= 0.30 && accentSat >= 0.12;
-            bool dark = avg < 0.30 || primaryLum < 0.20;
-            bool grayish = ps < 0.10 && !hasAccent;
+            // Broad "dark" classification keeps more non-black covers tinted;
+            // only a genuinely near-black image loses the cover palette.
+            bool veryDark = avg < 0.10;
+            bool hasAccent = accentBucket != null
+                && secondaryLum >= 0.24
+                && asat >= 0.12;
+            bool dark = avg < 0.32 || primaryLum < 0.19;
+            bool grayish = ps < 0.12 && !hasAccent;
 
             Palette result = new Palette();
             result.Primary = primary;
-            result.Secondary = secondary;
+            result.Secondary = accent;
             result.Luminance = avg;
             result.IsDark = dark;
             result.IsVeryDark = veryDark;
